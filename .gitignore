@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.py[cod]
+
+# Keep biometric datasets and derived recognition outputs out of the repository.
+data/
+tests/*_output/
+tests/**/*.csv
+tests/**/*.jpg
+tests/**/*.jpeg
+tests/**/*.png
