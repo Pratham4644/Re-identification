@@ -1,24 +1,3 @@
-"""
-Multi-camera staff tracking V2 (experimental baseline)
-======================================================
-Keeps per-camera YOLO/ByteTrack tracks separate and associates them to cautious
-global IDs using OSNet body embeddings when torchreid is installed. Face
-recognition can attach a staff name; body similarity alone never invents a name.
-
-Outputs:
-  tests/multi_camera_output_v2/track_events.csv
-  tests/multi_camera_output_v2/attendance_events.csv  (one first_seen per staff/day)
-
-Environment:
-  CAMERA_202_RTSP, CAMERA_302_RTSP
-Optional:
-  STAFF_GALLERY_PATH, V2_BODY_REID=1, V2_FACE_INTERVAL_SEC=1.5
-
-This is a test baseline, not production attendance software. Tune thresholds with
-recorded footage before relying on attendance records. OSNet pretrained weights
-may download on first use.
-"""
-
 from __future__ import annotations
 
 import csv
@@ -48,19 +27,24 @@ CAMERAS = {
     "CAM-302": os.getenv("CAMERA_302_RTSP", ""),
 }
 GALLERY_PATH = Path(os.getenv("STAFF_GALLERY_PATH", str(ROOT / "data" / "staff_gallery")))
-OUT_DIR = ROOT / "tests" / "multi_camera_output_v2"
+OUT_DIR = ROOT / "tests" / "multi_camera_output_v4"
+TRACKER_CONFIG = OUT_DIR / "bytetrack_v4.yaml"
 TRACK_CSV = OUT_DIR / "track_events.csv"
 ATTENDANCE_CSV = OUT_DIR / "attendance_events.csv"
 
-YOLO_MODEL = os.getenv("V2_YOLO_MODEL", str(ROOT / "yolo11n.pt"))
-YOLO_IMGSZ = int(os.getenv("V2_YOLO_IMGSZ", "416"))
-YOLO_CONF = float(os.getenv("V2_YOLO_CONF", "0.35"))
-FACE_INTERVAL = float(os.getenv("V2_FACE_INTERVAL_SEC", "1.5"))
-GLOBAL_TTL = float(os.getenv("V2_GLOBAL_TTL_SEC", "45"))
-BODY_ENABLED = os.getenv("V2_BODY_REID", "1") != "0"
-BODY_MATCH_THRESHOLD = float(os.getenv("V2_BODY_MATCH_THRESHOLD", "0.78"))
-FACE_MATCH_THRESHOLD = float(os.getenv("V2_FACE_MATCH_THRESHOLD", "0.45"))
-FACE_MARGIN = float(os.getenv("V2_FACE_MARGIN", "0.05"))
+YOLO_MODEL = os.getenv("V4_YOLO_MODEL", str(ROOT / "yolo11n.pt"))
+YOLO_IMGSZ = int(os.getenv("V4_YOLO_IMGSZ", "416"))
+YOLO_CONF = float(os.getenv("V4_YOLO_CONF", "0.35"))
+FACE_INTERVAL = float(os.getenv("V3_FACE_INTERVAL_SEC", "1.5"))
+GLOBAL_TTL = float(os.getenv("V4_GLOBAL_TTL_SEC", "45"))
+BODY_ENABLED = os.getenv("V4_BODY_REID", "1") != "0"
+REID_CHECKPOINT = os.getenv("V4_REID_CHECKPOINT", "").strip()
+FACE_VOTES_REQUIRED = int(os.getenv("V4_FACE_VOTES_REQUIRED", "3"))
+FACE_VOTE_WINDOW_SEC = float(os.getenv("V4_FACE_VOTE_WINDOW_SEC", "20"))
+CROSS_CAMERA_FACE_LINK = os.getenv("V4_CROSS_CAMERA_FACE_LINK", "1") != "0"
+BODY_MATCH_THRESHOLD = float(os.getenv("V4_BODY_MATCH_THRESHOLD", "0.82"))
+FACE_MATCH_THRESHOLD = float(os.getenv("V4_FACE_MATCH_THRESHOLD", "0.45"))
+FACE_MARGIN = float(os.getenv("V4_FACE_MARGIN", "0.08"))
 
 stop_event = threading.Event()
 face_lock = threading.Lock()
@@ -89,53 +73,48 @@ def cosine(a: Optional[np.ndarray], b: Optional[np.ndarray]) -> float:
 
 
 class BodyEmbedder:
-    """OSNet person-ReID features via torchreid; fails closed if unavailable."""
+    """
+    Uses torchreid FeatureExtractor only with an explicit checkpoint supplied by
+    V4_REID_CHECKPOINT. ImageNet-only weights are not treated as person-ReID.
+    """
     def __init__(self):
-        self.model = None
-        self.transform = None
-        self.torch = None
+        self.extractor = None
         if not BODY_ENABLED:
-            print("[BODY] Disabled by V2_BODY_REID=0")
+            print("[BODY] Disabled by V4_BODY_REID=0")
+            return
+        if not REID_CHECKPOINT:
+            print("[BODY] No V4_REID_CHECKPOINT supplied. Body-based cross-camera matching is DISABLED.")
+            print("[BODY] This is intentional: ImageNet-only features are not person-ReID embeddings.")
+            return
+        checkpoint = Path(REID_CHECKPOINT).expanduser()
+        if not checkpoint.is_file():
+            print(f"[BODY] ReID checkpoint does not exist: {checkpoint}")
+            print("[BODY] Body-based cross-camera matching is DISABLED.")
             return
         try:
-            import torch
             import torchreid
-            from torchvision import transforms
-            self.torch = torch
-            self.model = torchreid.models.build_model(
-                name="osnet_x1_0", num_classes=1000, loss="softmax", pretrained=True
+            self.extractor = torchreid.utils.FeatureExtractor(
+                model_name="osnet_x1_0", model_path=str(checkpoint), device="cpu"
             )
-            self.model.eval()
-            self.transform = transforms.Compose([
-                transforms.ToPILImage(),
-                transforms.Resize((256, 128)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225]),
-            ])
-            print("[BODY] OSNet loaded; body matching is enabled.")
+            print(f"[BODY] Loaded explicit person-ReID checkpoint: {checkpoint}")
         except Exception as exc:
-            self.model = None
-            print("[BODY] OSNet unavailable. Cross-camera matching will be face-anchor only.")
-            print(f"[BODY] Details: {type(exc).__name__}: {exc}")
-            print("[BODY] Install in this venv with: pip install git+https://github.com/KaiyangZhou/deep-person-reid.git")
+            self.extractor = None
+            print(f"[BODY] Could not load ReID checkpoint: {type(exc).__name__}: {exc}")
+            print("[BODY] Body-based cross-camera matching is DISABLED.")
 
     def embed(self, bgr_crop: np.ndarray) -> Optional[np.ndarray]:
-        if self.model is None or bgr_crop is None or bgr_crop.size == 0:
+        if self.extractor is None or bgr_crop is None or bgr_crop.size == 0:
             return None
         h, w = bgr_crop.shape[:2]
-        if h < 70 or w < 25:
+        if h < 90 or w < 30:
             return None
-        rgb = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2RGB)
-        tensor = self.transform(rgb).unsqueeze(0)
         try:
-            with self.torch.no_grad():
-                feature = self.model(tensor)
-            if isinstance(feature, (tuple, list)):
-                feature = feature[0]
-            return normalize(feature.detach().cpu().numpy().reshape(-1))
+            feature = self.extractor(bgr_crop)
+            if hasattr(feature, "detach"):
+                feature = feature.detach().cpu().numpy()
+            return normalize(np.asarray(feature).reshape(-1))
         except Exception as exc:
-            print(f"[BODY] Embedding error: {exc}")
+            print(f"[BODY] Embedding error: {type(exc).__name__}: {exc}")
             return None
 
 
@@ -149,6 +128,7 @@ class GlobalPerson:
     staff_name: str = "Unknown"
     face_scores: deque = field(default_factory=lambda: deque(maxlen=7))
     face_name_votes: Counter = field(default_factory=Counter)
+    face_vote_times: dict[str, deque] = field(default_factory=dict)
     last_face_at: float = 0.0
     cameras_seen: set = field(default_factory=set)
 
@@ -165,6 +145,8 @@ class LocalTrack:
     body_similarity: float = -1.0
     staff_name: str = "Unknown"
     last_bbox: tuple = (0, 0, 0, 0)
+    match_reason: str = "new_global"
+    match_score: float = -1.0
 
 
 class SharedRegistry:
@@ -196,30 +178,109 @@ class SharedRegistry:
                 if gp is not None:
                     gp.last_seen = t
                     gp.cameras_seen.add(camera_id)
-                return lt, -1.0
+                return lt, lt.match_score
 
-            best_gp = None
-            best_sim = -1.0
             blocked = self._active_local_ids(camera_id, t)
+            best_gp, best_sim = None, -1.0
+            reason = "new_global"
+
+            # Body matching only works when an explicit person-ReID checkpoint loaded.
             if body is not None:
+                candidates = []
                 for gp in self.globals.values():
                     if t - gp.last_seen > GLOBAL_TTL or gp.global_id in blocked:
                         continue
-                    if gp.body_embedding is None:
-                        continue
-                    sim = cosine(body, gp.body_embedding)
-                    # Require a strong OSNet match; identical uniforms can still collide.
-                    if sim > best_sim:
-                        best_sim, best_gp = sim, gp
-            if best_gp is None or best_sim < BODY_MATCH_THRESHOLD:
+                    if gp.body_embedding is not None:
+                        candidates.append((cosine(body, gp.body_embedding), gp))
+                candidates.sort(key=lambda item: item[0], reverse=True)
+                if candidates:
+                    top_sim, top_gp = candidates[0]
+                    second_sim = candidates[1][0] if len(candidates) > 1 else -1.0
+                    if top_sim >= BODY_MATCH_THRESHOLD and top_sim - second_sim >= 0.04:
+                        best_gp, best_sim, reason = top_gp, top_sim, "body_reid"
+
+            if best_gp is None:
                 best_gp = self._new_global(t)
+                reason = "new_global"
                 best_sim = -1.0
 
-            lt = LocalTrack(camera_id, local_id, best_gp.global_id, t)
+            lt = LocalTrack(camera_id, local_id, best_gp.global_id, t,
+                            match_reason=reason, match_score=best_sim)
             self.locals[key] = lt
             best_gp.last_seen = t
             best_gp.cameras_seen.add(camera_id)
             return lt, best_sim
+
+    def link_confirmed_face(self, lt: LocalTrack, name: str, t: float) -> LocalTrack:
+        """
+        Confirmed face names are canonical staff identities. If the same staff
+        member has accumulated duplicate global IDs, link to the oldest eligible
+        same-name identity, but never merge two tracks active in the same camera.
+        """
+        if not CROSS_CAMERA_FACE_LINK or name == "Unknown":
+            return lt
+        with state_lock:
+            current = self.globals.get(lt.global_id)
+            if current is None or current.staff_name not in ("Unknown", name):
+                return lt
+
+            blocked = self._active_local_ids(lt.camera_id, t)
+            candidates = [
+                gp for gp in self.globals.values()
+                if gp.global_id != current.global_id
+                and gp.staff_name == name
+                and gp.global_id not in blocked
+                and t - gp.last_seen <= GLOBAL_TTL
+            ]
+            if not candidates:
+                return lt
+
+            # All candidates already have the same confirmed staff name. Prefer
+            # the oldest identity to prevent creating a new canonical ID per visit.
+            target = min(candidates, key=lambda gp: gp.created_at)
+            old_id = lt.global_id
+            lt.global_id = target.global_id
+            lt.match_reason = "confirmed_face_canonical_staff"
+            lt.match_score = -1.0
+            target.last_seen = t
+            target.cameras_seen.add(lt.camera_id)
+
+            # Repoint tracks from duplicate IDs on other cameras to the canonical
+            # identity. Do not repoint an active track in this camera, because two
+            # simultaneous people must never share one global ID.
+            duplicate_ids = {
+                gp.global_id for gp in candidates
+                if gp.global_id != target.global_id
+            }
+            duplicate_ids.add(old_id)
+            for other in self.locals.values():
+                if other is lt or other.global_id not in duplicate_ids:
+                    continue
+                if other.camera_id == lt.camera_id and t - other.last_seen < 2.0:
+                    continue
+                other.global_id = target.global_id
+                other.match_reason = "canonical_staff_merge"
+                other.match_score = -1.0
+
+            # Merge metadata and remove duplicate registry entries only when no
+            # local tracks still refer to them.
+            for duplicate_id in list(duplicate_ids):
+                if duplicate_id == target.global_id:
+                    continue
+                duplicate = self.globals.get(duplicate_id)
+                if duplicate is not None:
+                    target.cameras_seen.update(duplicate.cameras_seen)
+                    if target.body_embedding is None and duplicate.body_embedding is not None:
+                        target.body_embedding = duplicate.body_embedding.copy()
+                        target.body_samples = duplicate.body_samples
+                referenced = any(x.global_id == duplicate_id for x in self.locals.values())
+                if not referenced:
+                    self.globals.pop(duplicate_id, None)
+            return lt
+
+    def safe_get_local(self, camera_id: str, local_id: int) -> Optional[LocalTrack]:
+        with state_lock:
+            return self.locals.get((camera_id, local_id))
 
     def update_body(self, lt: LocalTrack, emb: Optional[np.ndarray], t: float):
         if emb is None:
@@ -241,22 +302,28 @@ class SharedRegistry:
         lt.face_similarity = similarity
         if name == "Unknown" or similarity < FACE_MATCH_THRESHOLD:
             return
+        confirmed_name = "Unknown"
         with state_lock:
             gp = self.globals.get(lt.global_id)
             if gp is None:
                 return
-            # Do not silently overwrite one confirmed name with another.
             if gp.staff_name not in ("Unknown", name):
                 print(f"[SAFETY] Conflicting face names for {gp.global_id}: "
                       f"{gp.staff_name} vs {name}; leaving name unchanged.")
                 return
-            gp.face_name_votes[name] += 1
+            votes = gp.face_vote_times.setdefault(name, deque())
+            votes.append(t)
+            while votes and t - votes[0] > FACE_VOTE_WINDOW_SEC:
+                votes.popleft()
+            gp.face_name_votes[name] = len(votes)
             gp.face_scores.append(similarity)
             gp.last_face_at = t
-            # Require repeated consistent face evidence before attaching a staff name.
-            if gp.face_name_votes[name] >= 2 and len(gp.face_scores) >= 2:
+            if len(votes) >= FACE_VOTES_REQUIRED and len(gp.face_scores) >= 2:
                 gp.staff_name = name
+                confirmed_name = name
             lt.staff_name = gp.staff_name
+        if confirmed_name != "Unknown":
+            self.link_confirmed_face(lt, confirmed_name, t)
 
     def get_name(self, lt: LocalTrack) -> str:
         with state_lock:
@@ -296,11 +363,21 @@ registry = SharedRegistry()
 
 def init_csvs():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    TRACKER_CONFIG.write_text(
+        "tracker_type: bytetrack\\n"
+        "track_high_thresh: 0.25\\n"
+        "track_low_thresh: 0.10\\n"
+        "new_track_thresh: 0.25\\n"
+        "track_buffer: 90\\n"
+        "match_thresh: 0.80\\n"
+        "fuse_score: True\\n",
+        encoding="utf-8",
+    )
     with TRACK_CSV.open("w", newline="", encoding="utf-8") as f:
         csv.DictWriter(f, fieldnames=[
             "timestamp", "camera_id", "local_track_id", "global_id", "staff_name",
             "face_similarity", "body_similarity", "bbox_x1", "bbox_y1", "bbox_x2",
-            "bbox_y2", "status"
+            "bbox_y2", "status", "match_reason", "match_score", "cameras_seen"
         ]).writeheader()
     with ATTENDANCE_CSV.open("w", newline="", encoding="utf-8") as f:
         csv.DictWriter(f, fieldnames=[
@@ -386,7 +463,7 @@ def camera_worker(camera_id: str, url: str, face_recognizer, gallery, embedder):
             frame_no += 1
             t = time.monotonic()
             try:
-                result = model.track(frame, persist=True, tracker="bytetrack.yaml",
+                result = model.track(frame, persist=True, tracker=str(TRACKER_CONFIG),
                                      classes=[0], conf=YOLO_CONF, imgsz=YOLO_IMGSZ,
                                      verbose=False, device="cpu")[0]
             except Exception as exc:
@@ -404,7 +481,7 @@ def camera_worker(camera_id: str, url: str, face_recognizer, gallery, embedder):
                 if crop is None:
                     continue
                 key = (camera_id, int(local_id))
-                lt = registry.locals.get(key)
+                lt = registry.safe_get_local(camera_id, int(local_id))
                 body_emb = None
                 if lt is None or t - lt.last_body_attempt >= 1.5:
                     body_emb = embedder.embed(crop)
@@ -437,11 +514,15 @@ def camera_worker(camera_id: str, url: str, face_recognizer, gallery, embedder):
                     "staff_name": staff_name,
                     "face_similarity": round(lt.face_similarity, 4),
                     "body_similarity": round(lt.body_similarity, 4),
-                    "bbox_x1": x1, "bbox_y1": y1, "bbox_x2": x2, "bbox_y2": y2,
-                    "status": "identified" if staff_name != "Unknown" else "tracking"
+                    "bbox_x1": x1, "bbox_y1": y1,  "bbox_x2": x2, "bbox_y2": y2,
+                    "status": "identified" if staff_name != "Unknown" else "tracking",
+                    "match_reason": lt.match_reason,
+                    "match_score": round(lt.match_score, 4),
+                    "cameras_seen": ",".join(sorted(registry.globals.get(lt.global_id).cameras_seen))
+                        if registry.globals.get(lt.global_id) else camera_id
                 }))
             registry.prune(t)
-            cv2.imshow(f"V2 {camera_id}", cv2.resize(frame, (960, 540)))
+            cv2.imshow(f"V4 {camera_id}", cv2.resize(frame, (960, 540)))
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 stop_event.set()
                 break
@@ -451,7 +532,7 @@ def camera_worker(camera_id: str, url: str, face_recognizer, gallery, embedder):
         if cap is not None:
             cap.release()
         try:
-            cv2.destroyWindow(f"V2 {camera_id}")
+            cv2.destroyWindow(f"V4 {camera_id}")
         except Exception:
             pass
         print(f"[{camera_id}] Stopped")
@@ -490,7 +571,9 @@ def main():
                               daemon=True, name=camera_id)
         th.start()
         threads.append(th)
-    print("V2 running. Press q in a video window or Ctrl+C to stop.")
+    print("V4 running. Press q in a video window or Ctrl+C to stop.")
+    print(f"[CONFIG] body_reid={'enabled' if embedder.extractor is not None else 'disabled'}; "
+          f"face_votes_required={FACE_VOTES_REQUIRED}; face_link={CROSS_CAMERA_FACE_LINK}")
     try:
         while any(th.is_alive() for th in threads):
             time.sleep(0.5)
