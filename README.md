@@ -23,27 +23,38 @@ This is research and prototyping code. Similarity thresholds, camera behavior, a
 
 ```text
 .
+├── .env.example
 ├── config/
 │   ├── cameras.json
-│   └── settings.yaml
-├── data/
-│   ├── evaluation/          # Evaluation images organized by expected identity
+│   ├── settings.yaml
+│   └── tracking/
+│       └── bytetrack_v4.yaml
+├── data/                    # Local only; not committed
+│   ├── evaluation/          # Query images organized by expected identity
 │   └── staff_gallery/       # Enrollment images organized by staff identity
 ├── models/
-│   └── haarcascade_frontalface_default.xml
+│   ├── haarcascade_frontalface_default.xml
+│   ├── lbfmodel.yaml
+│   └── reid/                # Optional person-ReID checkpoints
+├── outputs/                 # Generated images, CSVs, and run logs
+├── scripts/                 # Evaluation, benchmarks, RTSP, and live tracking
 ├── src/
-│   ├── detection/           # Person detection, face alignment and association
+│   ├── detection/           # Person detection, face alignment, and association
 │   ├── recognition/         # Face embeddings and quality checks
 │   ├── camera/              # Camera package
 │   ├── tracking/            # Tracking package
 │   ├── app/                 # Application package
 │   └── main.py
-├── tests/                   # Evaluation, benchmark and live-camera scripts
+├── tests/                   # Offline checks against gallery and evaluation images
+├── web/
+│   └── camera_page.html
 ├── yolo11n.pt               # Local YOLO weights
-└── yolo26s.pt                # Additional local YOLO weights
+└── yolo26s.pt               # Additional local YOLO weights
 ```
 
-The currently implemented reusable functionality is concentrated in the detection and recognition modules. The camera, tracking, and app packages and `src/main.py` are scaffolding rather than a complete integrated application; the runnable live workflows are in `tests/`.
+The currently implemented reusable functionality is concentrated in the detection and recognition modules. The camera, tracking, and app packages and `src/main.py` are scaffolding rather than a complete integrated application. Runnable live workflows are in `scripts/`.
+
+Python files were not edited in this layout pass. Scripts still resolve the repository root as their parent directory, and they still read `data/staff_gallery`, `data/evaluation`, `models/`, and `yolo11n.pt` from those existing locations. Generated files are stored in `outputs/`. The historical `tests/*_output` and `tests/multi_camera_output*` folders are directory links into `outputs/`, so those scripts keep writing to the same paths.
 
 ## Requirements and setup
 
@@ -112,13 +123,13 @@ python tests\test_person_detector.py
 python tests\test_face_recognition.py
 python tests\test_face_quality.py
 python tests\test_face_person_association.py
-python tests\evaluate_face_recognition.py
-python tests\evaluate_thresholds.py
+python scripts\evaluate_face_recognition.py
+python scripts\evaluate_thresholds.py
 ```
 
-These are standalone scripts, not a conventional pytest suite. They may load neural-network models, require the gallery/evaluation folders, and in some cases write annotated images or CSV results under `tests/`. Check a script’s constants near its top before running it if you need to change a model path, threshold, or output location.
+These are standalone scripts, not a conventional pytest suite. They may load neural-network models, require the gallery/evaluation folders, and in some cases write annotated images or CSV results. Those artifacts are kept under `outputs/` (the `tests/` output folders link there). Check a script’s constants near its top before running it if you need to change a model path, threshold, or output location.
 
-`evaluate_face_recognition.py` writes `tests/face_evaluation_results.csv` with candidate rankings and a preliminary known-person top-1 result. Its unknown-person rows report candidate scores; they do not constitute an open-set false-accept evaluation. `test_face_recognition.py` is a gallery enrollment self-check and does not measure recognition accuracy.
+`evaluate_face_recognition.py` writes `tests/face_evaluation_results.csv` (the same file as `outputs/evaluation/face_evaluation_results.csv`) with candidate rankings and a preliminary known-person top-1 result. Its unknown-person rows report candidate scores; they do not constitute an open-set false-accept evaluation. `test_face_recognition.py` is a gallery enrollment self-check and does not measure recognition accuracy.
 
 ### Live RTSP tracking
 
@@ -126,14 +137,14 @@ The live scripts expect RTSP URLs in environment variables. Set them in the curr
 
 ```powershell
 $env:CAMERA_202_RTSP = "rtsp://<camera-url>"
-python tests\live_person_tracking.py
+python scripts\live_person_tracking.py
 ```
 
 For live face recognition against the staff gallery:
 
 ```powershell
 $env:CAMERA_202_RTSP = "rtsp://<camera-url>"
-python tests\live_person_recognition.py
+python scripts\live_person_recognition.py
 ```
 
 The live recognition script performs person tracking and periodically detects/embeds faces, applies face-quality checks, and logs recognition events. Its threshold and temporal voting settings are experimental. Live scripts display a video window; press **Q** in that window to stop when the script indicates that shortcut.
@@ -145,10 +156,10 @@ Set both camera variables before starting the script:
 ```powershell
 $env:CAMERA_202_RTSP = "rtsp://<camera-202-url>"
 $env:CAMERA_302_RTSP = "rtsp://<camera-302-url>"
-python tests\multi_camera_staff_tracking_v4_fixed.py
+python scripts\multi_camera_staff_tracking_v4_fixed.py
 ```
 
-The V4 experiment keeps local tracker IDs per camera and can write track and attendance CSVs under `tests/multi_camera_output_v4/`. Face recognition can attach a staff name; body similarity alone is not intended to assign a staff identity. Body-based cross-camera matching requires `V4_REID_CHECKPOINT` to point to an appropriate person-ReID-trained OSNet checkpoint. It is disabled if no usable checkpoint is supplied. The script also supports optional settings such as `STAFF_GALLERY_PATH`, `V4_BODY_REID`, `V4_YOLO_MODEL`, and matching thresholds; see the constants and environment-variable reads in `tests/multi_camera_staff_tracking_v4_fixed.py` before configuring it.
+The V4 experiment keeps local tracker IDs per camera and can write track and attendance CSVs under `outputs/multi_camera/v5/` (the script’s `tests/multi_camera_output_v5` path links there). Face recognition can attach a staff name; body similarity alone is not intended to assign a staff identity. Body-based cross-camera matching requires `V4_REID_CHECKPOINT` to point to an appropriate person-ReID-trained OSNet checkpoint. It is disabled if no usable checkpoint is supplied. The script also supports optional settings such as `STAFF_GALLERY_PATH`, `V4_BODY_REID`, `V4_YOLO_MODEL`, and matching thresholds; see the constants and environment-variable reads in `scripts/multi_camera_staff_tracking_v4_fixed.py` before configuring it. A copy of the ByteTrack settings used by that experiment is in `config/tracking/bytetrack_v4.yaml`.
 
 ## Important limitations
 
