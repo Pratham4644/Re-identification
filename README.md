@@ -24,18 +24,24 @@ This is research and prototyping code. Similarity thresholds, camera behavior, a
 ```text
 .
 ├── .env.example
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
 ├── config/
-│   ├── cameras.json
-│   ├── settings.yaml
+│   ├── cameras.json         # Camera ids and the env vars that supply URLs
+│   ├── settings.yaml        # Defaults exported by the container entrypoint
 │   └── tracking/
 │       └── bytetrack_v4.yaml
+├── deploy/
+│   └── entrypoint.sh
 ├── data/                    # Local only; not committed
 │   ├── evaluation/          # Query images organized by expected identity
 │   └── staff_gallery/       # Enrollment images organized by staff identity
 ├── models/
 │   ├── haarcascade_frontalface_default.xml
-│   ├── lbfmodel.yaml
-│   └── reid/                # Optional person-ReID checkpoints
+│   ├── lbfmodel.yaml        # Local only; not committed
+│   ├── reid/                # Optional person-ReID checkpoints
+│   └── weights/             # Optional copy of YOLO weights
 ├── outputs/                 # Generated images, CSVs, and run logs
 ├── scripts/                 # Evaluation, benchmarks, RTSP, and live tracking
 ├── src/
@@ -48,8 +54,7 @@ This is research and prototyping code. Similarity thresholds, camera behavior, a
 ├── tests/                   # Offline checks against gallery and evaluation images
 ├── web/
 │   └── camera_page.html
-├── yolo11n.pt               # Local YOLO weights
-└── yolo26s.pt               # Additional local YOLO weights
+└── yolo11n.pt               # Local YOLO weights; not committed
 ```
 
 The currently implemented reusable functionality is concentrated in the detection and recognition modules. The camera, tracking, and app packages and `src/main.py` are scaffolding rather than a complete integrated application. Runnable live workflows are in `scripts/`.
@@ -62,14 +67,22 @@ Python files were not edited in this layout pass. Scripts still resolve the repo
 - Windows, Linux, or macOS with the native dependencies required by OpenCV, PyTorch, Ultralytics, and InsightFace.
 - A working camera/RTSP endpoint for live scripts.
 
-`requirements.txt` is currently empty, so it does not install the project dependencies. Create and activate a virtual environment, then install the packages needed for the workflows you plan to use. For example, in PowerShell:
+Install the pinned runtime from `requirements.txt`:
 
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install numpy opencv-python ultralytics insightface onnxruntime
+python -m pip install -r requirements.txt
 ```
+
+The container runs `scripts/multi_camera_staff_tracking_v5_safe.py`. Copy `.env.example` to `.env` and set the camera URLs, then:
+
+```powershell
+docker compose up --build
+```
+
+`deploy/entrypoint.sh` loads non-empty defaults from `config/settings.yaml` and drops blank environment variables, so a blank camera URL does not erase a script default. Weights stay on the host: mount `yolo11n.pt` and `models/` as `docker-compose.yml` does. Python sources are not changed by this packaging.
 
 The multi-camera V4 script can additionally use `torchreid` with its dependencies, but only when body-ReID is enabled and an explicit compatible person-ReID checkpoint is provided. That optional setup is not required for face-based recognition or basic person detection.
 
@@ -131,31 +144,37 @@ These are standalone scripts, not a conventional pytest suite. They may load neu
 
 `evaluate_face_recognition.py` writes `tests/face_evaluation_results.csv` (the same file as `outputs/evaluation/face_evaluation_results.csv`) with candidate rankings and a preliminary known-person top-1 result. Its unknown-person rows report candidate scores; they do not constitute an open-set false-accept evaluation. `test_face_recognition.py` is a gallery enrollment self-check and does not measure recognition accuracy.
 
-### Live RTSP tracking
+### Configuring cameras (unlimited)
 
-The live scripts expect RTSP URLs in environment variables. Set them in the current PowerShell session; do not put camera credentials or URLs in source code or commit them:
+Multi-camera scripts load every configured camera from `config/cameras.json` (`src/camera/camera_config.py`). Add as many entries as you need:
 
-```powershell
-$env:CAMERA_202_RTSP = "rtsp://<camera-url>"
-python scripts\live_person_tracking.py
+```json
+{ "id": "DESK-07", "url_env": "CAMERA_DESK_07_URL", "fallback_env": "CAMERA_DESK_07_RTSP" }
 ```
 
-For live face recognition against the staff gallery:
+Set the matching URL in `.env`. Overrides: `CAMERAS_JSON` (JSON array) or `CAMERAS=ID|url;ID2|url2`.
+
+Single-camera scripts use `CAMERA_ID` and `CAMERA_URL` / `CAMERA_RTSP`, or the first configured camera when `CAMERA_ID` is omitted.
+
+### Live RTSP tracking
+
+Configure `config/cameras.json`, set stream URLs in `.env`, then:
 
 ```powershell
-$env:CAMERA_202_RTSP = "rtsp://<camera-url>"
+$env:CAMERA_ID = "CAM-202"
+$env:CAMERA_RTSP = "rtsp://<camera-url>"
+python scripts\live_person_tracking.py
 python scripts\live_person_recognition.py
 ```
 
 The live recognition script performs person tracking and periodically detects/embeds faces, applies face-quality checks, and logs recognition events. Its threshold and temporal voting settings are experimental. Live scripts display a video window; press **Q** in that window to stop when the script indicates that shortcut.
 
-### Multi-camera V4 experiment
+### Multi-camera tracking (production worker)
 
-Set both camera variables before starting the script:
+Set URLs for each id listed in `config/cameras.json`, then start the worker (Docker default or local):
 
 ```powershell
-$env:CAMERA_202_RTSP = "rtsp://<camera-202-url>"
-$env:CAMERA_302_RTSP = "rtsp://<camera-302-url>"
+python scripts\multi_camera_staff_tracking_v5_safe.py
 python scripts\multi_camera_staff_tracking_v4_fixed.py
 ```
 

@@ -1,4 +1,5 @@
 import os
+import sys
 import csv
 import time
 from datetime import datetime
@@ -13,13 +14,14 @@ from ultralytics import YOLO
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.camera.camera_config import resolve_single_camera_stream
 
 MODEL_PATH = PROJECT_ROOT / "yolo11n.pt"
 OUTPUT_DIR = PROJECT_ROOT / "tests" / "live_tracking_output"
 LOG_PATH = OUTPUT_DIR / "tracking_events.csv"
-
-CAMERA_ID = "CAM-202"
-CAMERA_ENV = "CAMERA_202_RTSP"
+CAMERA_ID = "CAM-1"
 
 CONFIDENCE = 0.35
 IMAGE_SIZE = 640
@@ -81,11 +83,14 @@ def log_track(track_id, confidence, bbox, event="visible"):
 # ============================================================
 
 def main():
-    rtsp_url = os.environ.get(CAMERA_ENV)
+    camera_id, rtsp_url = resolve_single_camera_stream(PROJECT_ROOT)
+    global CAMERA_ID
+    CAMERA_ID = camera_id
 
     if not rtsp_url:
         raise RuntimeError(
-            f"{CAMERA_ENV} is not set in this PowerShell session."
+            "No camera URL configured. Set CAMERA_URL / CAMERA_RTSP, or add "
+            f"camera {camera_id!r} to config/cameras.json with url_env."
         )
 
     if not MODEL_PATH.exists():

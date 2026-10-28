@@ -1,0 +1,19 @@
+{
+  "cameras": [
+    {
+      "id": "CAM-202",
+      "url_env": "CAMERA_202_URL",
+      "fallback_env": "CAMERA_202_RTSP"
+    },
+    {
+      "id": "CAM-302",
+      "url_env": "CAMERA_302_URL",
+      "fallback_env": "CAMERA_302_RTSP"
+    },
+    {
+      "id": "CAM-401",
+      "url_env": "CAMERA_401_URL",
+      "fallback_env": "CAMERA_401_RTSP"
+    }
+  ]
+}

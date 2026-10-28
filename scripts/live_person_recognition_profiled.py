@@ -12,14 +12,15 @@ from ultralytics import YOLO
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.camera.camera_config import resolve_single_camera_stream
 from src.recognition.face_recognizer import FaceRecognizer
 from src.recognition.face_quality import FaceQualityChecker
 
 # ---------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------
-CAMERA_ID = "CAM-202"
-RTSP_URL = os.environ.get("CAMERA_202_RTSP")
+CAMERA_ID = "CAM-1"
+RTSP_URL = ""
 
 GALLERY_PATH = PROJECT_ROOT / "data" / "staff_gallery"
 OUTPUT_DIR = PROJECT_ROOT / "tests" / "live_recognition_output"
@@ -107,8 +108,13 @@ def print_profile(stats, wall_elapsed, interval_frames, interval_faces):
 
 
 def main():
+    global CAMERA_ID, RTSP_URL
+    CAMERA_ID, RTSP_URL = resolve_single_camera_stream(PROJECT_ROOT)
     if not RTSP_URL:
-        raise RuntimeError("CAMERA_202_RTSP is not set in this PowerShell session.")
+        raise RuntimeError(
+            "No camera URL configured. Set CAMERA_URL / CAMERA_RTSP, or add "
+            f"camera {CAMERA_ID!r} to config/cameras.json."
+        )
     if not GALLERY_PATH.is_dir():
         raise RuntimeError(f"Staff gallery does not exist: {GALLERY_PATH}")
 

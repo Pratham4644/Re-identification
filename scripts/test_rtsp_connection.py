@@ -1,20 +1,25 @@
 import os
+import sys
 import time
 import cv2
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from src.camera.camera_config import resolve_single_camera_stream
+
 
 def main():
-    # Read the RTSP URL from an environment variable.
-    # Do not hardcode camera credentials into this script.
-    rtsp_url = os.environ.get("CAMERA_202_RTSP")
+    camera_id, rtsp_url = resolve_single_camera_stream(ROOT)
 
     if not rtsp_url:
         raise RuntimeError(
-            "Set CAMERA_202_RTSP in your PowerShell session first."
+            "No camera URL configured. Set CAMERA_URL / CAMERA_RTSP or "
+            "config/cameras.json."
         )
 
-    print("Opening CAM-202 stream...")
+    print(f"Opening {camera_id} stream...")
 
     # Use FFmpeg for RTSP transport through OpenCV.
     os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")

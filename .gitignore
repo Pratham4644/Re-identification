@@ -1,7 +1,17 @@
 venv/
+.venv/
 __pycache__/
 *.py[cod]
 .env
+
+# Local-only weights. Scripts still open yolo11n.pt and models/lbfmodel.yaml.
+*.pt
+models/lbfmodel.yaml
+
+# One-off patch scripts, script backups, and audit dumps.
+archive/
+*.bak
+*.backup*
 
 # Keep biometric datasets and derived recognition outputs out of the repository.
 data/

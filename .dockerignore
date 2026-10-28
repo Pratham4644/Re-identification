@@ -1,0 +1,16 @@
+.git
+.venv
+venv
+__pycache__
+**/__pycache__
+.pytest_cache
+data
+outputs
+archive
+*.pt
+models/lbfmodel.yaml
+**/*.bak
+**/*.backup*
+focused_audit.txt
+project_audit.txt
+redmi.md

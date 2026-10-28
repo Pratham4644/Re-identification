@@ -1,0 +1,12 @@
+services:
+  tracker:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - ./models:/app/models
+      - ./yolo11n.pt:/app/yolo11n.pt:ro
+    restart: unless-stopped

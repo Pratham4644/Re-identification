@@ -20,12 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.camera.camera_config import load_camera_urls
 from src.recognition.face_recognizer import FaceRecognizer
-
-CAMERAS = {
-    "CAM-202": os.getenv("CAMERA_202_URL", os.getenv("CAMERA_202_RTSP", "http://192.168.1.12:8080")).strip(),
-    "CAM-302": os.getenv("CAMERA_302_URL", os.getenv("CAMERA_302_RTSP", "")).strip(),
-}
 GALLERY_PATH = Path(os.getenv("STAFF_GALLERY_PATH", str(ROOT / "data" / "staff_gallery")))
 OUT_DIR = ROOT / "tests" / "multi_camera_output_v5"
 TRACKER_CONFIG = OUT_DIR / "bytetrack_v4.yaml"
@@ -562,10 +558,14 @@ def camera_worker(camera_id: str, url: str, face_recognizer, gallery, embedder):
 
 
 def main():
-    configured = {k: v for k, v in CAMERAS.items() if v.strip()}
+    configured = load_camera_urls(ROOT)
     if not configured:
-        print("No camera URLs configured. Set CAMERA_202_URL / CAMERA_302_URL or legacy RTSP variables.")
+        print(
+            "No camera URLs configured. Add cameras to config/cameras.json or "
+            "set CAMERAS_JSON / CAMERAS."
+        )
         return 2
+    print(f"[CONFIG] Cameras ({len(configured)}): {', '.join(sorted(configured.keys()))}")
     if not Path(YOLO_MODEL).exists() and not Path(YOLO_MODEL).is_absolute():
         print(f"YOLO model not found: {YOLO_MODEL}")
         return 2

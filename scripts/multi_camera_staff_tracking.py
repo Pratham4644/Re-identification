@@ -14,13 +14,9 @@ from ultralytics import YOLO
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.camera.camera_config import load_camera_urls
 from src.recognition.face_recognizer import FaceRecognizer
 from src.recognition.face_quality import FaceQualityChecker
-
-CAMERAS = {
-    "CAM-202": os.environ.get("CAMERA_202_RTSP"),
-    "CAM-302": os.environ.get("CAMERA_302_RTSP"),
-}
 GALLERY_PATH = PROJECT_ROOT / "data" / "staff_gallery"
 OUTPUT_DIR = PROJECT_ROOT / "tests" / "multi_camera_output"
 CSV_PATH = OUTPUT_DIR / "recognition_events.csv"
@@ -287,35 +283,54 @@ class CameraWorker(threading.Thread):
             safe_print(f"[{self.camera_id}] Worker stopped.")
 
 
-def side_by_side(left, right):
-    if left is None and right is None:
-        return None
-    if left is None:
-        left = right.copy()
-        cv2.putText(left, "CAM-202 waiting", (20, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    if right is None:
-        right = left.copy()
-        cv2.putText(right, "CAM-302 waiting", (20, 90),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+def combine_camera_frames(workers):
+    import numpy as np
 
-    target_height = min(left.shape[0], right.shape[0])
+    tiles = []
+    for worker in workers:
+        with worker.frame_lock:
+            frame = worker.latest_frame
+        if frame is None:
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(
+                frame,
+                f"{worker.camera_id} waiting",
+                (20, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 0, 255),
+                2,
+            )
+        tiles.append(frame)
+
+    if not tiles:
+        return None
+
+    target_height = min(img.shape[0] for img in tiles)
 
     def resize_height(img):
         scale = target_height / img.shape[0]
         return cv2.resize(img, (int(img.shape[1] * scale), target_height))
 
-    return cv2.hconcat([resize_height(left), resize_height(right)])
+    resized = [resize_height(img) for img in tiles]
+    columns = 2 if len(resized) > 1 else 1
+    rows = []
+    for index in range(0, len(resized), columns):
+        row = resized[index : index + columns]
+        if len(row) < columns:
+            row = row + [np.zeros_like(row[0])] * (columns - len(row))
+        rows.append(cv2.hconcat(row))
+    return cv2.vconcat(rows) if len(rows) > 1 else rows[0]
 
 
 def main():
-    missing = [camera for camera, url in CAMERAS.items() if not url]
-    if missing:
+    cameras = load_camera_urls(PROJECT_ROOT)
+    if not cameras:
         raise RuntimeError(
-            "Missing RTSP environment variable(s) for: " + ", ".join(missing)
-            + ". Set CAMERA_202_RTSP and CAMERA_302_RTSP in this PowerShell "
-              "session. Keep credentials out of source code and screenshots."
+            "No cameras configured. Add entries to config/cameras.json or set "
+            "CAMERAS_JSON / CAMERAS. Keep credentials out of source code."
         )
+    print(f"[CONFIG] Cameras ({len(cameras)}): {', '.join(sorted(cameras.keys()))}")
     if not GALLERY_PATH.is_dir():
         raise RuntimeError(f"Staff gallery does not exist: {GALLERY_PATH}")
 
@@ -344,7 +359,7 @@ def main():
 
     workers = []
     print("[3/3] Starting camera workers...")
-    for camera_id, url in CAMERAS.items():
+    for camera_id, url in cameras.items():
         worker = CameraWorker(
             camera_id, url, gallery, face_recognizer, quality_checker
         )
@@ -353,15 +368,7 @@ def main():
 
     try:
         while not STOP_EVENT.is_set():
-            frames = []
-            for worker in workers:
-                with worker.frame_lock:
-                    frames.append(
-                        None if worker.latest_frame is None
-                        else worker.latest_frame.copy()
-                    )
-
-            combined = side_by_side(frames[0], frames[1])
+            combined = combine_camera_frames(workers)
             if combined is not None:
                 max_width = 1600
                 if combined.shape[1] > max_width:

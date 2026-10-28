@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -6,18 +7,25 @@ import cv2
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.camera.camera_config import resolve_single_camera_stream
+
 OUTPUT_DIR = PROJECT_ROOT / "tests" / "rtsp_test_output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-rtsp_url = os.environ.get("CAMERA_202_RTSP")
+camera_id, rtsp_url = resolve_single_camera_stream(PROJECT_ROOT)
 
 if not rtsp_url:
-    raise RuntimeError("CAMERA_202_RTSP environment variable is not set.")
+    raise RuntimeError(
+        "No camera URL configured. Set CAMERA_URL / CAMERA_RTSP or "
+        "config/cameras.json."
+    )
 
-output_path = OUTPUT_DIR / "opencv_camera_202_frame.jpg"
+output_path = OUTPUT_DIR / f"opencv_{camera_id.replace('/', '_')}_frame.jpg"
 
 print("OpenCV version:", cv2.__version__)
-print("Opening CAM-202...")
+print(f"Opening {camera_id}...")
 
 params = [
     cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000,
